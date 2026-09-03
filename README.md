@@ -20,15 +20,17 @@ This is a **convenience layer**, not a replacement for Bitwarden, Enpass, or ano
 
 Compiled `.exe` builds are optional. A compiled script still contains recoverable source; do not treat an exe as encryption.
 
-## Quick start
+## Quick start (demo)
 
-1. Clone this repo.
-2. Copy `snippets.ini.example` to `snippets.ini` in the same folder as `PassVault.ahk`.
+1. Clone this repo and place `PassVault.ahk` in the same folder.
+2. Copy `snippets.ini.example` to `snippets.ini`.
 3. Run `PassVault.ahk`.
-4. On first run, set a strong master passphrase (store that passphrase in your real password manager).
-5. Open **Manage Snippets** from the tray icon or `Ctrl+Alt+Shift+0`.
-6. Add a snippet, assign a hotkey such as `^!+1` (Ctrl+Alt+Shift+1), and set a 4-digit PIN.
-7. Focus the target window, press the hotkey, type the PIN.
+4. When asked for the master passphrase, type **`demo`**.
+5. Focus Notepad (or any text field).
+6. Press **Ctrl+Alt+Shift+1**, then type **`1234`**.
+7. The word **`password`** should appear.
+
+After that, open **Manage Snippets** from the tray or `Ctrl+Alt+Shift+0` and replace the demo with real entries. Use a strong master passphrase of your own for anything that matters — `demo` is only for first-run testing.
 
 ## Security model
 
@@ -48,28 +50,17 @@ A stolen INI is not enough by itself. An attacker still needs the master passphr
 - This does not protect you if someone already has your unlocked Windows session.
 - Copying `snippets.ini` to another machine works only if you also know the master passphrase.
 - Compiling to `.exe` does not hide the algorithm or make the vault stronger.
+- The shipped demo uses master=`demo` and PIN=`1234`. Treat that as public test data.
 
 ## Config format
 
-```ini
-[Master]
-Verifier=...
-
-[prod]
-Salt=...
-Data=...
-Hotkey=^!+1
-Note=Banner production
-Category=work
-Created=2026-09-02 21:00:00
-LastUsed=
-```
+See `snippets.ini.example` for a working sample section named `[sample]`.
 
 ## Project layout
 
 ```
 PassVault.ahk              ; runnable entry point
-snippets.ini.example       ; safe template
+snippets.ini.example       ; demo vault (safe to publish)
 LICENSE
 README.md
 ```
@@ -91,6 +82,7 @@ Keep `snippets.ini` beside the exe. Do not FileInstall a real vault into the exe
 - [x] Portable session master passphrase
 - [x] INI-backed snippets and hotkeys
 - [x] Manager GUI
+- [x] Published demo snippet
 - [ ] Split library files
 - [ ] Optional DPAPI-wrapped master key for single-machine convenience
 - [ ] AES-GCM behind the existing `VaultCrypto_*` API
