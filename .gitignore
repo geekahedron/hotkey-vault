@@ -1,0 +1,17 @@
+# Never commit real vault data
+snippets.ini
+*.ini
+!snippets.ini.example
+
+# Compiled output
+*.exe
+dist/
+build/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
