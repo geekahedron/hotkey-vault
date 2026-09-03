@@ -1,9 +1,21 @@
-; Hotkey Vault config example
+; Hotkey Vault demo config
 ; Copy this file to snippets.ini next to PassVault.ahk (or the compiled exe).
-; Never commit a real snippets.ini.
+; Never commit a real snippets.ini with your own secrets.
 ;
-; Master.Verifier is SHA-256 of the session master passphrase plus an app salt.
-; It does not store the passphrase. Snippet Data is ciphertext only.
+; Demo unlock:
+;   Master passphrase: demo
+;   Hotkey:            Ctrl+Alt+Shift+1
+;   PIN:               1234
+;   Typed result:      password
 
 [Master]
-Verifier=
+Verifier=eeba91674dd983ac09218725afa1fee08bf91898b6e08a59fdb4c39f5db69729
+
+[sample]
+Salt=00112233445566778899aabbccddeeff
+Data=zn4pSPlb3I5gcDHU
+Hotkey=^!+1
+Note=Demo snippet — Ctrl+Alt+Shift+1 then 1234 types the word password
+Category=demo
+Created=2026-09-02 21:30:00
+LastUsed=
