@@ -7,15 +7,19 @@
 ;   Hotkey:            Ctrl+Alt+Shift+1
 ;   PIN:               1234
 ;   Typed result:      password
+;   Alt+U after hotkey: types username (no PIN)
+;   Alt+Enter after hotkey then PIN: types password + Enter
 
 [Master]
 Verifier=eeba91674dd983ac09218725afa1fee08bf91898b6e08a59fdb4c39f5db69729
+ProtectedKey=
 
 [sample]
 Salt=00112233445566778899aabbccddeeff
 Data=zn4pSPlb3I5gcDHU
+Username=demo-user
 Hotkey=^!+1
-Note=Demo snippet — Ctrl+Alt+Shift+1 then 1234 types the word password
+Note=Demo snippet — Ctrl+Alt+Shift+1 then 1234 types password. Alt+U types username.
 Category=demo
 Created=2026-09-02 21:30:00
 LastUsed=
