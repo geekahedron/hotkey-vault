@@ -2,12 +2,12 @@
 #SingleInstance Force
 Persistent
 
-; Hotkey Vault — portable session-unlock edition
-; Config: snippets.ini beside this script (or compiled exe)
+; Hotkey Vault — portable + optional DPAPI master, username/password, post-hotkey modifiers
+; Config: snippets.ini beside this script
 
 PIN_LENGTH     := 4
 MAGIC_PREFIX   := "AHK:"
-SHOW_FEEDBACK  := false
+SHOW_TOOLTIP   := true          ; show friendly name while waiting for PIN
 INI_PATH       := A_ScriptDir "\snippets.ini"
 VERIFIER_SALT  := "hotkey-vault-v1"
 
@@ -32,7 +32,7 @@ A_TrayMenu.Add("Lock / Exit",     (*) => ExitApp())
 A_TrayMenu.Default := "Manage Snippets"
 Hotkey("^!+0", (*) => OpenManager())
 
-; ----- black-box crypto (swap later without touching callers) -----
+; ----- black-box crypto -----
 
 VaultCrypto_DeriveKey(master, pin, saltHex, name) {
     return Sha256Buffer(StringToUtf8(master "|" pin "|" saltHex "|" name))
@@ -110,13 +110,56 @@ MasterVerifier(pass) {
     return BytesToHex(digest)
 }
 
+; ----- DPAPI helpers (optional silent unlock) -----
+
+DpapiProtect(plain) {
+    inBuf := StringToUtf8(plain)
+    inBlob := MakeDataBlob(inBuf)
+    outBlob := Buffer(A_PtrSize = 8 ? 16 : 8, 0)
+    ok := DllCall("crypt32\CryptProtectData",
+        "Ptr", inBlob, "WStr", "hotkey-vault master", "Ptr", 0, "Ptr", 0, "Ptr", 0,
+        "UInt", 0x1, "Ptr", outBlob, "Int")
+    if (!ok)
+        throw Error("CryptProtectData failed")
+    cb := NumGet(outBlob, 0, "UInt")
+    pb := NumGet(outBlob, A_PtrSize = 8 ? 8 : 4, "Ptr")
+    raw := Buffer(cb, 0)
+    DllCall("RtlMoveMemory", "Ptr", raw.Ptr, "Ptr", pb, "Ptr", cb)
+    DllCall("kernel32\LocalFree", "Ptr", pb)
+    return BytesToB64(raw)
+}
+
+DpapiUnprotect(b64) {
+    raw := B64ToBytes(b64)
+    inBlob := MakeDataBlob(raw)
+    outBlob := Buffer(A_PtrSize = 8 ? 16 : 8, 0)
+    ok := DllCall("crypt32\CryptUnprotectData",
+        "Ptr", inBlob, "Ptr", 0, "Ptr", 0, "Ptr", 0, "Ptr", 0,
+        "UInt", 0x1, "Ptr", outBlob, "Int")
+    if (!ok)
+        throw Error("CryptUnprotectData failed")
+    cb := NumGet(outBlob, 0, "UInt")
+    pb := NumGet(outBlob, A_PtrSize = 8 ? 8 : 4, "Ptr")
+    out := Buffer(cb, 0)
+    DllCall("RtlMoveMemory", "Ptr", out.Ptr, "Ptr", pb, "Ptr", cb)
+    DllCall("kernel32\LocalFree", "Ptr", pb)
+    return StrGet(out, out.Size, "UTF-8")
+}
+
+MakeDataBlob(buf) {
+    blob := Buffer(A_PtrSize = 8 ? 16 : 8, 0)
+    NumPut("UInt", buf.Size, blob, 0)
+    NumPut("Ptr", buf.Ptr, blob, A_PtrSize = 8 ? 8 : 4)
+    return blob
+}
+
 ; ----- config -----
 
 EnsureIniExists() {
     global INI_PATH
     if FileExist(INI_PATH)
         return
-    FileAppend("[Master]`r`nVerifier=`r`n", INI_PATH, "UTF-16")
+    FileAppend("[Master]`r`nVerifier=`r`nProtectedKey=`r`n", INI_PATH, "UTF-16")
 }
 
 LoadConfig() {
@@ -134,6 +177,7 @@ LoadConfig() {
         Snippets[section] := Map(
             "Salt",     IniGet(section, "Salt"),
             "Data",     IniGet(section, "Data"),
+            "Username", IniGet(section, "Username"),
             "Hotkey",   IniGet(section, "Hotkey"),
             "Note",     IniGet(section, "Note"),
             "Category", IniGet(section, "Category"),
@@ -152,7 +196,7 @@ IniGet(section, key) {
 
 SaveSnippet(name, rec) {
     global INI_PATH
-    for key in ["Salt", "Data", "Hotkey", "Note", "Category", "Created", "LastUsed"]
+    for key in ["Salt", "Data", "Username", "Hotkey", "Note", "Category", "Created", "LastUsed"]
         IniWrite(rec[key], INI_PATH, name, key)
 }
 
@@ -165,9 +209,20 @@ ReloadAll() {
 
 UnlockMaster() {
     global MasterKey, INI_PATH
+    ; 1) Try DPAPI silent unlock
+    blob := IniGet("Master", "ProtectedKey")
+    if (blob != "") {
+        try {
+            MasterKey := DpapiUnprotect(blob)
+            return true
+        } catch {
+            MasterKey := ""
+        }
+    }
+    ; 2) Verifier path (portable)
     stored := IniGet("Master", "Verifier")
     if (stored = "") {
-        first := InputBox("Create a strong master passphrase.`nStore it in your real password manager.`nIt is not written to disk.", "First run — set master passphrase", "Password w420 h180")
+        first := InputBox("Create a strong master passphrase.`nStore it in your real password manager.`nIt is not written in clear text.", "First run — set master passphrase", "Password w420 h180")
         if (first.Result = "Cancel" || Trim(first.Value) = "")
             return false
         confirm := InputBox("Confirm master passphrase:", "Confirm", "Password w420 h140")
@@ -177,6 +232,8 @@ UnlockMaster() {
         }
         MasterKey := first.Value
         IniWrite(MasterVerifier(MasterKey), INI_PATH, "Master", "Verifier")
+        ; also store DPAPI blob for this user
+        try IniWrite(DpapiProtect(MasterKey), INI_PATH, "Master", "ProtectedKey")
         return true
     }
     guess := InputBox("Enter master passphrase for this session:", "Unlock vault", "Password w420 h140")
@@ -187,6 +244,8 @@ UnlockMaster() {
         return false
     }
     MasterKey := guess.Value
+    ; refresh DPAPI blob for this machine
+    try IniWrite(DpapiProtect(MasterKey), INI_PATH, "Master", "ProtectedKey")
     return true
 }
 
@@ -215,50 +274,87 @@ UnregisterAllHotkeys() {
 }
 
 RetrieveAndSend(name, *) {
-    global Snippets, SHOW_FEEDBACK, INI_PATH, PIN_LENGTH, MasterKey
-    if (!Snippets.Has(name) || Snippets[name]["Data"] = "")
+    global Snippets, SHOW_TOOLTIP, INI_PATH, PIN_LENGTH, MasterKey
+    if (!Snippets.Has(name))
         return
+    rec := Snippets[name]
     if (MasterKey = "") {
         BriefTip("Vault is locked")
         return
     }
+
     targetWin := WinExist("A")
-    if (SHOW_FEEDBACK)
-        ShowPinPrompt(name)
+    MouseGetPos(&mx, &my)
+
+    ; Optional tooltip with friendly name
+    tipActive := false
+    if (SHOW_TOOLTIP) {
+        ToolTip(name, mx + 16, my + 16)
+        tipActive := true
+    }
+
+    ; Short window to catch Alt+U or Alt+Enter before PIN
+    mode := "password"   ; or "username" or "password+enter"
+    ihMod := InputHook("L1 T0.8", "{Esc}")
+    ihMod.Start()
+    ihMod.Wait()
+    first := ihMod.Input
+    endKey := ihMod.EndKey
+
+    if (tipActive)
+        ToolTip()
+
+    if (endKey = "Escape" || first = "") {
+        ; fall through to normal PIN for password
+    } else if (GetKeyState("Alt", "P") && (first = "u" || first = "U")) {
+        mode := "username"
+    } else if (GetKeyState("Alt", "P") && (endKey = "Enter" || first = "`n")) {
+        mode := "password+enter"
+    }
+
+    if (mode = "username") {
+        user := rec["Username"]
+        if (user = "") {
+            BriefTip("No username stored")
+            return
+        }
+        if (targetWin)
+            WinActivate(targetWin)
+        Sleep(60)
+        SendInput("{Raw}" user)
+        return
+    }
+
+    ; PIN path
+    if (SHOW_TOOLTIP)
+        ToolTip(name " — PIN", mx + 16, my + 16)
+
     ih := InputHook("L" PIN_LENGTH " T10", "{Esc}{Enter}{Backspace}")
     ih.Start()
     ih.Wait()
     pin := ih.Input
-    if (SHOW_FEEDBACK)
-        HidePinPrompt()
+    ToolTip()
+
     if (StrLen(pin) != PIN_LENGTH)
         return
+
     plain := Vault_DecryptSnippet(name, pin)
     if (plain = "") {
         ShowPinError()
         SetTimer(HidePinError, -1000)
         return
     }
+
     if (targetWin)
         WinActivate(targetWin)
-    Sleep(80)
+    Sleep(60)
     SendInput("{Raw}" plain)
+    if (mode = "password+enter")
+        SendInput("{Enter}")
+
     now := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     Snippets[name]["LastUsed"] := now
     try IniWrite(now, INI_PATH, name, "LastUsed")
-}
-
-ShowPinPrompt(name) {
-    global promptGui
-    promptGui := Gui("+AlwaysOnTop +ToolWindow -Caption +Border")
-    promptGui.SetFont("s10", "Segoe UI")
-    promptGui.Add("Text", "Center w260", "Enter 4-digit PIN for " name)
-    promptGui.Show("NA xCenter y160")
-}
-
-HidePinPrompt() {
-    global promptGui
-    try promptGui.Destroy()
 }
 
 ShowPinError() {
@@ -292,8 +388,8 @@ OpenManager() {
     }
     g := Gui("+Resize", "Hotkey Vault")
     g.SetFont("s9", "Segoe UI")
-    g.Add("Text", "xm w520", "Master: unlocked for this session (not stored on disk)")
-    lv := g.Add("ListView", "xm w700 r14 vLv Grid", ["Name", "Hotkey", "Category", "Note", "Created", "Last Used"])
+    g.Add("Text", "xm w640", "Master unlocked. Alt+U after hotkey = username (no PIN). Alt+Enter after hotkey = password + Enter.")
+    lv := g.Add("ListView", "xm w760 r14 vLv Grid", ["Name", "Username", "Hotkey", "Category", "Note", "Last Used"])
     lv.OnEvent("DoubleClick", (*) => ManagerEdit())
     g.Add("Button", "xm w90", "Add").OnEvent("Click", (*) => ManagerAdd())
     g.Add("Button", "x+8 w90", "Edit").OnEvent("Click", (*) => ManagerEdit())
@@ -313,7 +409,7 @@ RefreshManagerList() {
     lv := MgrGui["Lv"]
     lv.Delete()
     for name, rec in Snippets
-        lv.Add("", name, rec["Hotkey"], rec["Category"], rec["Note"], rec["Created"], rec["LastUsed"])
+        lv.Add("", name, rec["Username"], rec["Hotkey"], rec["Category"], rec["Note"], rec["LastUsed"])
     Loop 6
         lv.ModifyCol(A_Index, "AutoHdr")
 }
@@ -358,20 +454,22 @@ SnippetEditor(existingName, rec) {
     result := 0
     e := Gui("+Owner", isNew ? "Add snippet" : "Edit snippet")
     e.SetFont("s9", "Segoe UI")
-    e.Add("Text", "xm w80", "Name")
+    e.Add("Text", "xm w90", "Friendly name")
     e.Add("Edit", "x+8 w260 vName", existingName)
-    e.Add("Text", "xm w80", "Hotkey")
+    e.Add("Text", "xm w90", "Username")
+    e.Add("Edit", "x+8 w260 vUser", IsObject(rec) && rec.Has("Username") ? rec["Username"] : "")
+    e.Add("Text", "xm w90", "Hotkey")
     e.Add("Edit", "x+8 w260 vHotkey", IsObject(rec) && rec.Has("Hotkey") ? rec["Hotkey"] : "")
-    e.Add("Text", "xm w80", "Category")
+    e.Add("Text", "xm w90", "Category")
     e.Add("Edit", "x+8 w260 vCategory", IsObject(rec) && rec.Has("Category") ? rec["Category"] : "")
-    e.Add("Text", "xm w80", "Note")
+    e.Add("Text", "xm w90", "Note")
     e.Add("Edit", "x+8 w260 vNote", IsObject(rec) && rec.Has("Note") ? rec["Note"] : "")
-    e.Add("Text", "xm y+16 w360", isNew
+    e.Add("Text", "xm y+12 w360", isNew
         ? "Password and 4-digit PIN (PIN is not stored):"
         : "Leave password blank to keep the existing secret.")
-    e.Add("Text", "xm w80", "Password")
+    e.Add("Text", "xm w90", "Password")
     e.Add("Edit", "x+8 w260 vPass Password")
-    e.Add("Text", "xm w80", "PIN")
+    e.Add("Text", "xm w90", "PIN")
     e.Add("Edit", "x+8 w80 vPin Password Limit4 Number")
     e.Add("Button", "xm y+16 w90 Default", "Save").OnEvent("Click", OnSave)
     e.Add("Button", "x+8 w90", "Cancel").OnEvent("Click", (*) => e.Destroy())
@@ -379,6 +477,7 @@ SnippetEditor(existingName, rec) {
 
     OnSave(*) {
         name := Trim(e["Name"].Value)
+        user := Trim(e["User"].Value)
         pass := e["Pass"].Value
         pin  := e["Pin"].Value
         if (name = "") {
@@ -394,7 +493,8 @@ SnippetEditor(existingName, rec) {
             return
         }
         result := Map(
-            "Name", Trim(e["Name"].Value),
+            "Name", name,
+            "Username", user,
             "Hotkey", Trim(e["Hotkey"].Value),
             "Category", Trim(e["Category"].Value),
             "Note", Trim(e["Note"].Value),
@@ -410,7 +510,7 @@ SnippetEditor(existingName, rec) {
 }
 
 CommitSnippet(oldName, edit) {
-    global Snippets
+    global Snippets, INI_PATH
     name := edit["Name"]
     now := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     if (oldName != "" && oldName != name) {
@@ -426,10 +526,11 @@ CommitSnippet(oldName, edit) {
             MsgBox("A snippet named '" name "' already exists.", "Error", "Iconx")
             return
         }
-        rec := Map("Salt","","Data","","Hotkey","","Note","","Category","","Created",now,"LastUsed","")
+        rec := Map("Salt","","Data","","Username","","Hotkey","","Note","","Category","","Created",now,"LastUsed","")
     } else {
         rec := Snippets[oldName]
     }
+    rec["Username"] := edit["Username"]
     rec["Hotkey"] := edit["Hotkey"]
     rec["Category"] := edit["Category"]
     rec["Note"] := edit["Note"]
